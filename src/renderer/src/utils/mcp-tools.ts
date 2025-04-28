@@ -354,27 +354,28 @@ export function parseToolUse(content: string, mcpTools: MCPTool[]): MCPToolRespo
   // Find all tool use blocks
   while ((match = toolUsePattern.exec(content)) !== null) {
     // const fullMatch = match[0]
-    const toolName = match[2].trim()
-    const toolArgs = match[4].trim()
+    const toolUseName = match[2].trim()
+    const toolUseArgs = match[4].trim()
 
     // Try to parse the arguments as JSON
     let parsedArgs
     try {
-      parsedArgs = JSON.parse(toolArgs)
+      parsedArgs = JSON.parse(toolUseArgs)
     } catch (error) {
       // If parsing fails, use the string as is
-      parsedArgs = toolArgs
+      parsedArgs = toolUseArgs
     }
-    // console.log(`Parsed arguments for tool "${toolName}":`, parsedArgs)
-    const mcpTool = mcpTools.find((tool) => tool.id === toolName)
+    // console.log(`Parsed arguments for tool "${toolUseName}":`, parsedArgs)
+    const mcpTool = mcpTools.find((tool) => `${tool.serverName}:${tool.name}` == toolUseName)
+
     if (!mcpTool) {
-      console.error(`Tool "${toolName}" not found in MCP tools`)
+      console.error(`Tool "${toolUseName}" not found in MCP tools`)
       continue
     }
 
     // Add to tools array
     tools.push({
-      id: `${toolName}-${idx++}`, // Unique ID for each tool use
+      id: `${toolUseName}-${idx++}`, // Unique ID for each tool use
       tool: {
         ...mcpTool,
         inputSchema: parsedArgs
