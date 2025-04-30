@@ -1,9 +1,11 @@
+import { isFunctionCallingModel } from '@renderer/config/models'
 import { REFERENCE_PROMPT } from '@renderer/config/prompts'
 import { getLMStudioKeepAliveTime } from '@renderer/hooks/useLMStudio'
 import type {
   Assistant,
   GenerateImageParams,
   KnowledgeReference,
+  MCPTool,
   Model,
   Provider,
   Suggestion,
@@ -27,6 +29,8 @@ export default abstract class BaseProvider {
   protected host: string
   protected apiKey: string
 
+  protected useSystemPromptForTools: boolean = false
+
   constructor(provider: Provider) {
     this.provider = provider
     this.host = this.getBaseURL()
@@ -48,6 +52,8 @@ export default abstract class BaseProvider {
   abstract generateImage(params: GenerateImageParams): Promise<string[]>
   abstract generateImageByChat({ messages, assistant, onChunk, onFilterMessages }: CompletionsParams): Promise<void>
   abstract getEmbeddingDimensions(model: Model): Promise<number>
+
+  protected abstract convertMcpTools(mcpTools: MCPTool[]): any[]
 
   public getBaseURL(): string {
     const host = this.provider.apiHost
@@ -276,5 +282,33 @@ export default abstract class BaseProvider {
 
       return content // Return the content part for TEXT_DELTA emission
     }
+  }
+
+  protected setupToolsConfig<T>(params: { mcpTools?: MCPTool[]; model: Model; toolCall?: boolean }): { tools: T[] } {
+    const { mcpTools, model, toolCall } = params
+
+    this.useSystemPromptForTools = false
+    let tools = mcpTools && mcpTools.length > 0 ? this.convertMcpTools(mcpTools) : []
+
+    // Condition 1: Model does not support function calling
+    if (!isFunctionCallingModel(model) && mcpTools && mcpTools.length > 0) {
+      this.useSystemPromptForTools = true
+    }
+
+    // Condition 2: disable toolCall
+    if (!toolCall) {
+      tools = []
+      if (mcpTools && mcpTools.length > 0) {
+        this.useSystemPromptForTools = true
+      }
+    }
+
+    // Condition 3: Use system prompt if tools length exceeds 128
+    if (mcpTools && mcpTools.length > 128) {
+      this.useSystemPromptForTools = true
+      tools = []
+    }
+
+    return { tools }
   }
 }

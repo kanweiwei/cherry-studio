@@ -1,6 +1,7 @@
 import { DEFAULT_MAX_TOKENS } from '@renderer/config/constant'
 import {
   getOpenAIWebSearchParams,
+  isFunctionCallingModel,
   isGrokReasoningModel,
   isHunyuanSearchModel,
   isOpenAIoSeries,
@@ -26,6 +27,8 @@ import {
   Assistant,
   FileTypes,
   GenerateImageParams,
+  MCPCallToolResponse,
+  MCPTool,
   MCPToolResponse,
   Model,
   Provider,
@@ -43,7 +46,12 @@ import {
   convertLinksToOpenRouter,
   convertLinksToZhipu
 } from '@renderer/utils/linkConverter'
-import { mcpToolCallResponseToOpenAIMessage, parseAndCallTools } from '@renderer/utils/mcp-tools'
+import {
+  mcpToolCallResponseToOpenAIMessage,
+  mcpToolsToOpenAITools,
+  openAIToolsToMcpTool,
+  parseAndCallTools
+} from '@renderer/utils/mcp-tools'
 import { findFileBlocks, findImageBlocks, getMainTextContent } from '@renderer/utils/messageUtils/find'
 import { buildSystemPrompt } from '@renderer/utils/prompt'
 import { isEmpty, takeRight } from 'lodash'
@@ -51,7 +59,10 @@ import OpenAI, { AzureOpenAI } from 'openai'
 import {
   ChatCompletionContentPart,
   ChatCompletionCreateParamsNonStreaming,
-  ChatCompletionMessageParam
+  ChatCompletionMessageParam,
+  ChatCompletionMessageToolCall,
+  ChatCompletionTool,
+  ChatCompletionToolMessageParam
 } from 'openai/resources'
 
 import { CompletionsParams } from '.'
@@ -60,7 +71,7 @@ import BaseProvider from './BaseProvider'
 type ReasoningEffort = 'low' | 'medium' | 'high'
 
 export default class OpenAIProvider extends BaseProvider {
-  private sdk: OpenAI
+  protected sdk: OpenAI
 
   constructor(provider: Provider) {
     super(provider)
@@ -85,6 +96,23 @@ export default class OpenAIProvider extends BaseProvider {
         ...(this.provider.id === 'copilot' ? { 'copilot-vision-request': 'true' } : {})
       }
     })
+  }
+
+  convertMcpTools(mcpTools: MCPTool[]) {
+    return mcpToolsToOpenAITools(mcpTools)
+  }
+
+  mcpToolCallResponseToMessage = (toolUseId: string, toolCallId: string, resp: MCPCallToolResponse, model: Model) => {
+    if (isFunctionCallingModel(model) && !this.useSystemPromptForTools) {
+      const toolCallOut = {
+        role: 'tool',
+        tool_call_id: toolCallId,
+        content: resp.content.reduce((acc, c) => (c.type === 'text' ? acc + c.text : acc), '')
+      } satisfies ChatCompletionToolMessageParam
+      return toolCallOut
+    } else {
+      return mcpToolCallResponseToOpenAIMessage(toolUseId, resp, isVisionModel(model))
+    }
   }
 
   /**
@@ -337,7 +365,7 @@ export default class OpenAIProvider extends BaseProvider {
     }
     const defaultModel = getDefaultModel()
     const model = assistant.model || defaultModel
-    const { contextCount, maxTokens, streamOutput } = getAssistantSettings(assistant)
+    const { contextCount, maxTokens, streamOutput, toolCall } = getAssistantSettings(assistant)
     const isEnabledWebSearch = assistant.enableWebSearch || !!assistant.webSearchProviderId
     messages = addImageFileToContents(messages)
     let systemMessage = { role: 'system', content: assistant.prompt || '' }
@@ -347,7 +375,14 @@ export default class OpenAIProvider extends BaseProvider {
         content: `Formatting re-enabled${systemMessage ? '\n' + systemMessage.content : ''}`
       }
     }
-    if (mcpTools && mcpTools.length > 0) {
+
+    const { tools } = this.setupToolsConfig<ChatCompletionTool>({
+      mcpTools,
+      model,
+      toolCall
+    })
+
+    if (this.useSystemPromptForTools) {
       systemMessage.content = buildSystemPrompt(systemMessage.content || '', mcpTools)
     }
 
@@ -429,53 +464,91 @@ export default class OpenAIProvider extends BaseProvider {
 
     const toolResponses: MCPToolResponse[] = []
 
+    const processToolResults = async (toolResults: Awaited<ReturnType<typeof parseAndCallTools>>, idx: number) => {
+      if (toolResults.length === 0) return
+
+      toolResults.forEach((ts) => reqMessages.push(ts as ChatCompletionMessageParam))
+
+      console.debug('[tool] reqMessages before processing', model.id, reqMessages)
+      reqMessages = processReqMessages(model, reqMessages)
+      console.debug('[tool] reqMessages', model.id, reqMessages)
+
+      onChunk({ type: ChunkType.LLM_RESPONSE_CREATED })
+      const newStream = await this.sdk.chat.completions
+        // @ts-ignore key is not typed
+        .create(
+          {
+            model: model.id,
+            messages: reqMessages,
+            temperature: this.getTemperature(assistant, model),
+            top_p: this.getTopP(assistant, model),
+            max_tokens: maxTokens,
+            keep_alive: this.keepAliveTime,
+            stream: isSupportStreamOutput(),
+            tools: toolCall && isFunctionCallingModel(model) && !isEmpty(tools) ? tools : undefined,
+            ...getOpenAIWebSearchParams(assistant, model),
+            ...this.getReasoningEffort(assistant, model),
+            ...this.getProviderSpecificParameters(assistant, model),
+            ...this.getCustomParameters(assistant)
+          },
+          {
+            signal
+          }
+        )
+      await processStream(newStream, idx + 1)
+    }
+
+    const processToolCalls = async (mcpTools, toolCalls: ChatCompletionMessageToolCall[], idx: number) => {
+      const mcpToolResponses = toolCalls
+        .map((toolCall) => {
+          const mcpTool = openAIToolsToMcpTool(mcpTools, toolCall as ChatCompletionMessageToolCall)
+          if (!mcpTool) return undefined
+
+          const parsedArgs = (() => {
+            try {
+              return JSON.parse(toolCall.function.arguments)
+            } catch {
+              return toolCall.function.arguments
+            }
+          })()
+
+          return {
+            id: toolCall.id,
+            tool: mcpTool,
+            arguments: parsedArgs,
+            status: 'pending'
+          } satisfies MCPToolResponse
+        })
+        .filter((t): t is MCPToolResponse => typeof t !== 'undefined')
+
+      const toolResults = await parseAndCallTools(
+        mcpToolResponses,
+        toolResponses,
+        onChunk,
+        idx,
+        this.mcpToolCallResponseToMessage,
+        model,
+        mcpTools
+      )
+      await processToolResults(toolResults, idx)
+    }
+
     const processToolUses = async (content: string, idx: number) => {
       const toolResults = await parseAndCallTools(
         content,
         toolResponses,
         onChunk,
         idx,
-        mcpToolCallResponseToOpenAIMessage,
-        mcpTools,
-        isVisionModel(model)
+        this.mcpToolCallResponseToMessage,
+        model,
+        mcpTools
       )
-
-      if (toolResults.length > 0) {
-        reqMessages.push({
-          role: 'assistant',
-          content: content
-        } as ChatCompletionMessageParam)
-        toolResults.forEach((ts) => reqMessages.push(ts as ChatCompletionMessageParam))
-
-        console.debug('[tool] reqMessages before processing', model.id, reqMessages)
-        reqMessages = processReqMessages(model, reqMessages)
-        console.debug('[tool] reqMessages', model.id, reqMessages)
-        const newStream = await this.sdk.chat.completions
-          // @ts-ignore key is not typed
-          .create(
-            {
-              model: model.id,
-              messages: reqMessages,
-              temperature: this.getTemperature(assistant, model),
-              top_p: this.getTopP(assistant, model),
-              max_tokens: maxTokens,
-              keep_alive: this.keepAliveTime,
-              stream: isSupportStreamOutput(),
-              // tools: tools,
-              ...getOpenAIWebSearchParams(assistant, model),
-              ...this.getReasoningEffort(assistant, model),
-              ...this.getProviderSpecificParameters(assistant, model),
-              ...this.getCustomParameters(assistant)
-            },
-            {
-              signal
-            }
-          )
-        await processStream(newStream, idx + 1)
-      }
+      await processToolResults(toolResults, idx)
     }
 
     const processStream = async (stream: any, idx: number) => {
+      const toolCalls: ChatCompletionMessageToolCall[] = []
+
       // Handle non-streaming case (already returns early, no change needed here)
       if (!isSupportStreamOutput()) {
         const time_completion_millsec = new Date().getTime() - start_time_millsec
@@ -490,9 +563,24 @@ export default class OpenAIProvider extends BaseProvider {
         const finalUsage = stream.usage
         // Separate onChunk calls for text and usage/metrics
         if (stream.choices[0].message?.content) {
+          onChunk({ type: ChunkType.TEXT_DELTA, text: stream.choices[0].message.content })
           onChunk({ type: ChunkType.TEXT_COMPLETE, text: stream.choices[0].message.content })
         }
 
+        reqMessages.push(stream.choices[0].message)
+        if (stream.choices && stream.choices.length) {
+          stream.choices.forEach((choice) => {
+            if (choice.message?.tool_calls && choice.message?.tool_calls.length) {
+              choice.message?.tool_calls.forEach((t) => toolCalls.push(t))
+            }
+          })
+        }
+        if (toolCalls.length) {
+          await processToolCalls(mcpTools, toolCalls, idx)
+        }
+        if (stream.choices[0].message?.content) {
+          await processToolUses(stream.choices[0].message?.content, idx)
+        }
         // Always send usage and metrics data
         onChunk({ type: ChunkType.BLOCK_COMPLETE, response: { usage: finalUsage, metrics: finalMetrics } })
         return
@@ -591,6 +679,18 @@ export default class OpenAIProvider extends BaseProvider {
           // } else {
           // }
         }
+
+        // Tool Calls
+        if (delta?.tool_calls) {
+          delta.tool_calls.forEach((toolCall) => {
+            if (toolCall.id && toolCall.type === 'function') {
+              toolCalls.push(toolCall)
+            } else {
+              toolCalls[toolCalls.length - 1].function.arguments += toolCall.function.arguments
+            }
+          })
+        }
+
         // console.log('delta?.finish_reason', delta?.finish_reason)
         if (!isEmpty(finishReason)) {
           onChunk({ type: ChunkType.TEXT_COMPLETE, text: content })
@@ -660,8 +760,17 @@ export default class OpenAIProvider extends BaseProvider {
         // --- End of Incremental onChunk calls ---
       } // End of for await loop
 
+      reqMessages.push({
+        role: 'assistant',
+        content: content
+      })
+
       // Call processToolUses AFTER the loop finishes processing the main stream content
       // Note: parseAndCallTools inside processToolUses should handle its own onChunk for tool responses
+
+      if (toolCalls.length) {
+        await processToolCalls(mcpTools, toolCalls, idx)
+      }
       await processToolUses(content, idx)
 
       // Send the final block_complete chunk with accumulated data
@@ -700,7 +809,7 @@ export default class OpenAIProvider extends BaseProvider {
           max_tokens: maxTokens,
           keep_alive: this.keepAliveTime,
           stream: isSupportStreamOutput(),
-          // tools: tools,
+          tools: toolCall && isFunctionCallingModel(model) && !isEmpty(tools) ? tools : undefined,
           ...getOpenAIWebSearchParams(assistant, model),
           ...this.getReasoningEffort(assistant, model),
           ...this.getProviderSpecificParameters(assistant, model),

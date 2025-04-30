@@ -1,11 +1,16 @@
-import { ContentBlockParam, ToolUnion, ToolUseBlock } from '@anthropic-ai/sdk/resources'
-import { MessageParam } from '@anthropic-ai/sdk/resources'
-import { Content, FunctionCall, Part } from '@google/genai'
+import { ContentBlockParam, MessageParam, ToolUnion, ToolUseBlock } from '@anthropic-ai/sdk/resources'
+import { Content, FunctionCall, Part, Tool, Type as GeminiSchemaType } from '@google/genai'
+import { isVisionModel } from '@renderer/config/models'
 import store from '@renderer/store'
-import { MCPCallToolResponse, MCPServer, MCPTool, MCPToolResponse } from '@renderer/types'
+import { MCPCallToolResponse, MCPServer, MCPTool, MCPToolResponse, Model } from '@renderer/types'
 import type { MCPToolCompleteChunk, MCPToolInProgressChunk } from '@renderer/types/chunk'
 import { ChunkType } from '@renderer/types/chunk'
-import { ChatCompletionContentPart, ChatCompletionMessageParam, ChatCompletionMessageToolCall } from 'openai/resources'
+import {
+  ChatCompletionContentPart,
+  ChatCompletionMessageParam,
+  ChatCompletionMessageToolCall,
+  ChatCompletionTool
+} from 'openai/resources'
 
 import { CompletionsParams } from '../providers/AiProvider'
 
@@ -148,35 +153,32 @@ import { CompletionsParams } from '../providers/AiProvider'
 //   return processedProperties
 // }
 
-// export function mcpToolsToOpenAITools(mcpTools: MCPTool[]): Array<ChatCompletionTool> {
-//   return mcpTools.map((tool) => ({
-//     type: 'function',
-//     name: tool.name,
-//     function: {
-//       name: tool.id,
-//       description: tool.description,
-//       parameters: {
-//         type: 'object',
-//         properties: filterPropertieAttributes(tool)
-//       }
-//     }
-//   }))
-// }
+export function mcpToolsToOpenAITools(mcpTools: MCPTool[]): Array<ChatCompletionTool> {
+  return mcpTools.map((tool) => ({
+    type: 'function',
+    name: tool.id,
+    function: {
+      name: tool.id,
+      description: tool.description,
+      parameters: {
+        type: 'object',
+        properties: tool.inputSchema.properties,
+        required: tool.inputSchema.required
+      }
+    }
+  }))
+}
 
 export function openAIToolsToMcpTool(
-  mcpTools: MCPTool[] | undefined,
-  llmTool: ChatCompletionMessageToolCall
+  mcpTools: MCPTool[],
+  toolCall: ChatCompletionMessageToolCall
 ): MCPTool | undefined {
-  if (!mcpTools) {
-    return undefined
-  }
-
   const tool = mcpTools.find(
-    (mcptool) => mcptool.id === llmTool.function.name || mcptool.name === llmTool.function.name
+    (mcpTool) => mcpTool.id === toolCall.function.name || mcpTool.name === toolCall.function.name
   )
 
   if (!tool) {
-    console.warn('No MCP Tool found for tool call:', llmTool)
+    console.warn('No MCP Tool found for tool call:', toolCall)
     return undefined
   }
 
@@ -184,51 +186,37 @@ export function openAIToolsToMcpTool(
     `[MCP] OpenAI Tool to MCP Tool: ${tool.serverName} ${tool.name}`,
     tool,
     'args',
-    llmTool.function.arguments
+    toolCall.function.arguments
   )
-  // use this to parse the arguments and avoid parsing errors
-  let args: any = {}
-  try {
-    args = JSON.parse(llmTool.function.arguments)
-  } catch (e) {
-    console.error('Error parsing arguments', e)
-  }
 
-  return {
-    id: tool.id,
-    serverId: tool.serverId,
-    serverName: tool.serverName,
-    name: tool.name,
-    description: tool.description,
-    inputSchema: args
-  }
+  return tool
 }
 
-export async function callMCPTool(tool: MCPTool): Promise<MCPCallToolResponse> {
-  console.log(`[MCP] Calling Tool: ${tool.serverName} ${tool.name}`, tool)
+export async function callMCPTool(toolResponse: MCPToolResponse): Promise<MCPCallToolResponse> {
+  console.log(`[MCP] Calling Tool: ${toolResponse.tool.serverName} ${toolResponse.tool.name}`, toolResponse.tool)
   try {
-    const server = getMcpServerByTool(tool)
+    const server = getMcpServerByTool(toolResponse.tool)
 
     if (!server) {
-      throw new Error(`Server not found: ${tool.serverName}`)
+      throw new Error(`Server not found: ${toolResponse.tool.serverName}`)
     }
 
     const resp = await window.api.mcp.callTool({
       server,
-      name: tool.name,
-      args: tool.inputSchema
+      name: toolResponse.tool.name,
+      args: toolResponse.arguments
     })
 
-    console.log(`[MCP] Tool called: ${tool.serverName} ${tool.name}`, resp)
+    console.log(`[MCP] Tool called: ${toolResponse.tool.serverName} ${toolResponse.tool.name}`, resp)
     return resp
   } catch (e) {
-    console.error(`[MCP] Error calling Tool: ${tool.serverName} ${tool.name}`, e)
+    console.error(`[MCP] Error calling Tool: ${toolResponse.tool.serverName} ${toolResponse.tool.name}`, e)
     return Promise.resolve({
       isError: true,
       content: [
         {
           type: 'text',
-          text: `Error calling tool ${tool.name}: ${e instanceof Error ? (e.stack || e.message || "No error details available") : JSON.stringify(e)}`
+          text: `Error calling tool ${toolResponse.tool.name}: ${e instanceof Error ? e.stack || e.message || 'No error details available' : JSON.stringify(e)}`
         }
       ]
     })
@@ -240,7 +228,7 @@ export function mcpToolsToAnthropicTools(mcpTools: MCPTool[]): Array<ToolUnion> 
     const t: ToolUnion = {
       name: tool.id,
       description: tool.description,
-      // @ts-ignore no check
+      // @ts-ignore ignore type as it it unknow
       input_schema: tool.inputSchema
     }
     return t
@@ -253,53 +241,37 @@ export function anthropicToolUseToMcpTool(mcpTools: MCPTool[] | undefined, toolU
   if (!tool) {
     return undefined
   }
-  // @ts-ignore ignore type as it it unknow
-  tool.inputSchema = toolUse.input
   return tool
 }
 
-// export function mcpToolsToGeminiTools(mcpTools: MCPTool[] | undefined): geminiTool[] {
-//   if (!mcpTools || mcpTools.length === 0) {
-//     // No tools available
-//     return []
-//   }
-//   const functions: FunctionDeclaration[] = []
-
-//   for (const tool of mcpTools) {
-//     const properties = filterPropertieAttributes(tool, true)
-//     const functionDeclaration: FunctionDeclaration = {
-//       name: tool.id,
-//       description: tool.description,
-//       parameters: {
-//         type: SchemaType.OBJECT,
-//         properties:
-//           Object.keys(properties).length > 0
-//             ? Object.fromEntries(
-//                 Object.entries(properties).map(([key, value]) => [key, ensureValidSchema(value as Record<string, any>)])
-//               )
-//             : { _empty: { type: SchemaType.STRING } as SimpleStringSchema }
-//       } as FunctionDeclarationSchema
-//     }
-//     functions.push(functionDeclaration)
-//   }
-//   const tool: geminiTool = {
-//     functionDeclarations: functions
-//   }
-//   return [tool]
-// }
+export function mcpToolsToGeminiTools(mcpTools: MCPTool[]): Tool[] {
+  return [
+    {
+      functionDeclarations: mcpTools?.map((tool) => {
+        return {
+          name: tool.id,
+          description: tool.description,
+          parameters: {
+            type: GeminiSchemaType.OBJECT,
+            properties: tool.inputSchema.properties,
+            required: tool.inputSchema.required
+          }
+        }
+      })
+    }
+  ]
+}
 
 export function geminiFunctionCallToMcpTool(
   mcpTools: MCPTool[] | undefined,
-  fcall: FunctionCall | undefined
+  toolCall: FunctionCall | undefined
 ): MCPTool | undefined {
-  if (!fcall) return undefined
+  if (!toolCall) return undefined
   if (!mcpTools) return undefined
-  const tool = mcpTools.find((tool) => tool.id === fcall.name)
+  const tool = mcpTools.find((tool) => tool.id === toolCall.name)
   if (!tool) {
     return undefined
   }
-  // @ts-ignore schema is not a valid property
-  tool.inputSchema = fcall.args
   return tool
 }
 
@@ -376,10 +348,8 @@ export function parseToolUse(content: string, mcpTools: MCPTool[]): MCPToolRespo
     // Add to tools array
     tools.push({
       id: `${toolName}-${idx++}`, // Unique ID for each tool use
-      tool: {
-        ...mcpTool,
-        inputSchema: parsedArgs
-      },
+      tool: mcpTool,
+      arguments: parsedArgs,
       status: 'pending'
     })
 
@@ -390,35 +360,86 @@ export function parseToolUse(content: string, mcpTools: MCPTool[]): MCPToolRespo
 }
 
 export async function parseAndCallTools(
+  tools: MCPToolResponse[],
+  toolResponses: MCPToolResponse[],
+  onChunk: CompletionsParams['onChunk'],
+  idx: number,
+  convertToMessage: (
+    mcpToolId: string,
+    toolCallId: string,
+    resp: MCPCallToolResponse,
+    model: Model
+  ) => ChatCompletionMessageParam | MessageParam | Content,
+  model: Model,
+  mcpTools?: MCPTool[]
+): Promise<(ChatCompletionMessageParam | MessageParam | Content)[]>
+
+export async function parseAndCallTools(
   content: string,
   toolResponses: MCPToolResponse[],
   onChunk: CompletionsParams['onChunk'],
   idx: number,
   convertToMessage: (
+    mcpToolId: string,
     toolCallId: string,
     resp: MCPCallToolResponse,
-    isVisionModel: boolean
+    model: Model
   ) => ChatCompletionMessageParam | MessageParam | Content,
-  mcpTools?: MCPTool[],
-  isVisionModel: boolean = false
+  model: Model,
+  mcpTools?: MCPTool[]
+): Promise<(ChatCompletionMessageParam | MessageParam | Content)[]>
+
+export async function parseAndCallTools(
+  content: string | MCPToolResponse[],
+  allToolResponses: MCPToolResponse[],
+  onChunk: CompletionsParams['onChunk'],
+  idx: number,
+  convertToMessage: (
+    mcpToolId: string,
+    toolCallId: string,
+    resp: MCPCallToolResponse,
+    model: Model
+  ) => ChatCompletionMessageParam | MessageParam | Content,
+  model: Model,
+  mcpTools?: MCPTool[]
 ): Promise<(ChatCompletionMessageParam | MessageParam | Content)[]> {
   const toolResults: (ChatCompletionMessageParam | MessageParam | Content)[] = []
-  // process tool use
-  const tools = parseToolUse(content, mcpTools || [])
-  if (!tools || tools.length === 0) {
+  let curToolResponses: MCPToolResponse[] = []
+  if (Array.isArray(content)) {
+    curToolResponses = content
+  } else {
+    // process tool use
+    curToolResponses = parseToolUse(content, mcpTools || [])
+  }
+  if (!curToolResponses || curToolResponses.length === 0) {
     return toolResults
   }
-  for (let i = 0; i < tools.length; i++) {
-    const tool = tools[i]
-    upsertMCPToolResponse(toolResponses, { id: `${tool.id}-${idx}-${i}`, tool: tool.tool, status: 'invoking' }, onChunk)
+  for (let i = 0; i < curToolResponses.length; i++) {
+    const toolResponse = curToolResponses[i]
+    upsertMCPToolResponse(
+      allToolResponses,
+      {
+        id: `${toolResponse.id}-${idx}-${i}`,
+        tool: toolResponse.tool,
+        arguments: toolResponse.arguments,
+        status: 'invoking'
+      },
+      onChunk
+    )
   }
 
   const images: string[] = []
-  const toolPromises = tools.map(async (tool, i) => {
-    const toolCallResponse = await callMCPTool(tool.tool)
+  const toolPromises = curToolResponses.map(async (toolResponse, i) => {
+    const toolCallResponse = await callMCPTool(toolResponse)
     upsertMCPToolResponse(
-      toolResponses,
-      { id: `${tool.id}-${idx}-${i}`, tool: tool.tool, status: 'done', response: toolCallResponse },
+      allToolResponses,
+      {
+        id: `${toolResponse.id}-${idx}-${i}`,
+        tool: toolResponse.tool,
+        arguments: toolResponse.arguments,
+        status: 'done',
+        response: toolCallResponse
+      },
       onChunk
     )
 
@@ -438,7 +459,7 @@ export async function parseAndCallTools(
       })
     }
 
-    return convertToMessage(tool.tool.id, toolCallResponse, isVisionModel)
+    return convertToMessage(toolResponse.tool.id, toolResponse.id, toolCallResponse, model)
   })
 
   toolResults.push(...(await Promise.all(toolPromises)))
@@ -446,7 +467,7 @@ export async function parseAndCallTools(
 }
 
 export function mcpToolCallResponseToOpenAIMessage(
-  toolCallId: string,
+  toolUseId: string,
   resp: MCPCallToolResponse,
   isVisionModel: boolean = false
 ): ChatCompletionMessageParam {
@@ -460,7 +481,7 @@ export function mcpToolCallResponseToOpenAIMessage(
     const content: ChatCompletionContentPart[] = [
       {
         type: 'text',
-        text: `Here is the result of tool call ${toolCallId}:`
+        text: `Here is the result of tool call ${toolUseId}:`
       }
     ]
 
@@ -500,10 +521,21 @@ export function mcpToolCallResponseToOpenAIMessage(
         }
       }
     } else {
-      content.push({
-        type: 'text',
-        text: JSON.stringify(resp.content)
-      })
+      const hasText = resp.content.some((item) => item.type === 'text')
+      for (const item of resp.content) {
+        if (item.type === 'text') {
+          content.push({
+            type: 'text',
+            text: item.text || 'no content'
+          })
+        }
+      }
+      if (!hasText) {
+        content.push({
+          type: 'text',
+          text: JSON.stringify(resp.content)
+        })
+      }
     }
 
     message.content = content
@@ -513,9 +545,10 @@ export function mcpToolCallResponseToOpenAIMessage(
 }
 
 export function mcpToolCallResponseToAnthropicMessage(
+  mcpToolId: string,
   toolCallId: string,
   resp: MCPCallToolResponse,
-  isVisionModel: boolean = false
+  model: Model
 ): MessageParam {
   const message = {
     role: 'user'
@@ -529,7 +562,7 @@ export function mcpToolCallResponseToAnthropicMessage(
         text: `Here is the result of tool call ${toolCallId}:`
       }
     ]
-    if (isVisionModel) {
+    if (isVisionModel(model)) {
       for (const item of resp.content) {
         switch (item.type) {
           case 'text':
@@ -581,7 +614,7 @@ export function mcpToolCallResponseToAnthropicMessage(
 }
 
 export function mcpToolCallResponseToGeminiMessage(
-  toolCallId: string,
+  toolUseId: string,
   resp: MCPCallToolResponse,
   isVisionModel: boolean = false
 ): Content {
@@ -598,7 +631,7 @@ export function mcpToolCallResponseToGeminiMessage(
   } else {
     const parts: Part[] = [
       {
-        text: `Here is the result of tool call ${toolCallId}:`
+        text: `Here is the result of tool call ${toolUseId}:`
       }
     ]
     if (isVisionModel) {

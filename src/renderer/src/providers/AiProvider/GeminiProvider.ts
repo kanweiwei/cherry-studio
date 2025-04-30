@@ -1,6 +1,7 @@
 import {
   Content,
   File,
+  FunctionCall,
   GenerateContentConfig,
   GenerateContentResponse,
   GoogleGenAI,
@@ -11,9 +12,11 @@ import {
   PartUnion,
   SafetySetting,
   ThinkingConfig,
-  ToolListUnion
+  Tool
 } from '@google/genai'
+import { nanoid } from '@reduxjs/toolkit'
 import {
+  isFunctionCallingModel,
   isGemini25ReasoningModel,
   isGemmaModel,
   isGenerateImageModel,
@@ -33,6 +36,8 @@ import {
   Assistant,
   FileType,
   FileTypes,
+  MCPCallToolResponse,
+  MCPTool,
   MCPToolResponse,
   Model,
   Provider,
@@ -43,7 +48,12 @@ import {
 import { BlockCompleteChunk, ChunkType, LLMWebSearchCompleteChunk } from '@renderer/types/chunk'
 import type { Message, Response } from '@renderer/types/newMessage'
 import { removeSpecialCharactersForTopicName } from '@renderer/utils'
-import { mcpToolCallResponseToGeminiMessage, parseAndCallTools } from '@renderer/utils/mcp-tools'
+import {
+  geminiFunctionCallToMcpTool,
+  mcpToolCallResponseToGeminiMessage,
+  mcpToolsToGeminiTools,
+  parseAndCallTools
+} from '@renderer/utils/mcp-tools'
 import { findFileBlocks, findImageBlocks, getMainTextContent } from '@renderer/utils/messageUtils/find'
 import { buildSystemPrompt } from '@renderer/utils/prompt'
 import { MB } from '@shared/config/constant'
@@ -259,7 +269,7 @@ export default class GeminiProvider extends BaseProvider {
   }: CompletionsParams): Promise<void> {
     const defaultModel = getDefaultModel()
     const model = assistant.model || defaultModel
-    const { contextCount, maxTokens, streamOutput } = getAssistantSettings(assistant)
+    const { contextCount, maxTokens, streamOutput, toolCall } = getAssistantSettings(assistant)
 
     const userMessages = filterUserRoleStartMessages(
       filterEmptyMessages(filterContextMessages(takeRight(messages, contextCount + 2)))
@@ -276,12 +286,16 @@ export default class GeminiProvider extends BaseProvider {
 
     let systemInstruction = assistant.prompt
 
-    if (mcpTools && mcpTools.length > 0) {
+    const { tools } = this.setupToolsConfig<Tool>({
+      mcpTools,
+      model,
+      toolCall
+    })
+
+    if (this.useSystemPromptForTools) {
       systemInstruction = buildSystemPrompt(assistant.prompt || '', mcpTools)
     }
 
-    // const tools = mcpToolsToGeminiTools(mcpTools)
-    const tools: ToolListUnion = []
     const toolResponses: MCPToolResponse[] = []
 
     if (assistant.enableWebSearch && isWebSearchModel(model)) {
@@ -390,16 +404,7 @@ export default class GeminiProvider extends BaseProvider {
       }
     })
 
-    const processToolUses = async (content: string, idx: number) => {
-      const toolResults = await parseAndCallTools(
-        content,
-        toolResponses,
-        onChunk,
-        idx,
-        mcpToolCallResponseToGeminiMessage,
-        mcpTools,
-        isVisionModel(model)
-      )
+    const processToolResults = async (toolResults: Awaited<ReturnType<typeof parseAndCallTools>>, idx: number) => {
       if (toolResults && toolResults.length > 0) {
         history.push(messageContents)
         const newChat = this.sdk.chats.create({
@@ -407,6 +412,7 @@ export default class GeminiProvider extends BaseProvider {
           config: generateContentConfig,
           history: history as Content[]
         })
+
         const newStream = await newChat.sendMessageStream({
           message: flatten(toolResults.map((ts) => (ts as Content).parts)) as PartUnion,
           config: {
@@ -418,10 +424,60 @@ export default class GeminiProvider extends BaseProvider {
       }
     }
 
+    const processToolCalls = async (toolCalls: FunctionCall[], idx: number) => {
+      const mcpToolResponses = toolCalls
+        .map((toolCall) => {
+          const mcpTool = geminiFunctionCallToMcpTool(mcpTools, toolCall)
+          if (!mcpTool) return undefined
+
+          const parsedArgs = (() => {
+            try {
+              return typeof toolCall.args === 'string' ? JSON.parse(toolCall.args) : toolCall.args
+            } catch {
+              return toolCall.args
+            }
+          })()
+
+          return {
+            id: toolCall.id || nanoid(),
+            tool: mcpTool,
+            arguments: parsedArgs,
+            status: 'pending'
+          } satisfies MCPToolResponse
+        })
+        .filter((t): t is MCPToolResponse => typeof t !== 'undefined')
+
+      const toolResults = await parseAndCallTools(
+        mcpToolResponses,
+        toolResponses,
+        onChunk,
+        idx,
+        this.mcpToolCallResponseToMessage,
+        model,
+        mcpTools
+      )
+
+      await processToolResults(toolResults, idx)
+    }
+
+    const processToolUses = async (content: string, idx: number) => {
+      const toolResults = await parseAndCallTools(
+        content,
+        toolResponses,
+        onChunk,
+        idx,
+        this.mcpToolCallResponseToMessage,
+        model,
+        mcpTools
+      )
+      await processToolResults(toolResults, idx)
+    }
+
     const processStream = async (stream: AsyncGenerator<GenerateContentResponse>, idx: number) => {
       let content = ''
       let final_time_completion_millsec = 0
       let lastUsage: Usage | undefined = undefined
+      let functionCalls: FunctionCall[] = []
       for await (const chunk of stream) {
         if (window.keyv.get(EVENT_NAMES.CHAT_COMPLETION_PAUSED)) break
 
@@ -468,6 +524,10 @@ export default class GeminiProvider extends BaseProvider {
               }
             } as LLMWebSearchCompleteChunk)
           }
+          if (chunk.functionCalls) {
+            functionCalls = functionCalls.concat(chunk.functionCalls)
+          }
+
           onChunk({
             type: ChunkType.BLOCK_COMPLETE,
             response: {
@@ -485,6 +545,9 @@ export default class GeminiProvider extends BaseProvider {
         // Call processToolUses AFTER potentially processing text content in this chunk
         // This assumes tools might be specified within the text stream
         // Note: parseAndCallTools inside should handle its own onChunk for tool responses
+        if (functionCalls.length) {
+          await processToolCalls(functionCalls, idx)
+        }
         await processToolUses(content, idx)
       }
     }
@@ -807,5 +870,32 @@ export default class GeminiProvider extends BaseProvider {
 
   public generateImageByChat(): Promise<void> {
     throw new Error('Method not implemented.')
+  }
+
+  convertMcpTools(mcpTools: MCPTool[]): Tool[] {
+    return mcpToolsToGeminiTools(mcpTools)
+  }
+
+  mcpToolCallResponseToMessage = (toolUseId: string, toolCallId: string, resp: MCPCallToolResponse, model: Model) => {
+    if (isFunctionCallingModel(model) && !this.useSystemPromptForTools) {
+      const toolCallOut = {
+        role: 'user',
+        parts: [
+          {
+            functionResponse: {
+              id: toolCallId,
+              name: toolUseId,
+              response: {
+                output: !resp.isError ? resp.content : undefined,
+                error: resp.isError ? resp.content : undefined
+              }
+            }
+          }
+        ]
+      } satisfies Content
+      return toolCallOut
+    } else {
+      return mcpToolCallResponseToGeminiMessage(toolUseId, resp, isVisionModel(model))
+    }
   }
 }
