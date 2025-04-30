@@ -43,6 +43,7 @@ export type AssistantSettings = {
   maxTokens: number | undefined
   enableMaxTokens: boolean
   streamOutput: boolean
+  toolCall: boolean
   hideMessages: boolean
   defaultModel?: Model
   customParameters?: AssistantSettingCustomParameters[]
@@ -147,7 +148,7 @@ export type Provider = {
   notes?: string
 }
 
-export type ProviderType = 'openai' | 'anthropic' | 'gemini' | 'qwenlm' | 'azure-openai'
+export type ProviderType = 'openai' | 'anthropic' | 'gemini' | 'qwenlm' | 'azure-openai' | 'silicon'
 
 export type ModelType = 'text' | 'vision' | 'embedding' | 'reasoning' | 'function_calling' | 'web_search'
 
@@ -555,6 +556,7 @@ export interface MCPConfig {
 export interface MCPToolResponse {
   id: string // tool call id, it should be unique
   tool: MCPTool // tool info
+  arguments: Record<string, unknown> | undefined
   status: string // 'invoking' | 'done'
   response?: any
 }
@@ -568,6 +570,7 @@ export interface MCPToolResultContent {
     uri?: string
     text?: string
     mimeType?: string
+    blob?: string
   }
 }
 

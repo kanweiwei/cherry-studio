@@ -870,12 +870,12 @@ export const resendMessageThunk =
         (m) => m.askId === userMessageToResend.id && m.role === 'assistant'
       )
 
-      if (assistantMessagesToReset.length === 0) {
-        console.warn(
-          `[resendMessageThunk] No assistant responses found for user message ${userMessageToResend.id}. Nothing to regenerate.`
-        )
-        return
-      }
+      // if (assistantMessagesToReset.length === 0) {
+      //   console.warn(
+      //     `[resendMessageThunk] No assistant responses found for user message ${userMessageToResend.id}. Nothing to regenerate.`
+      //   )
+      //   return
+      // }
 
       console.log(
         `[resendMessageThunk] Found ${assistantMessagesToReset.length} assistant messages to reset and regenerate.`
