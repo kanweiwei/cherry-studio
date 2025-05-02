@@ -133,7 +133,7 @@ export const AvailableTools = (tools: MCPTool[]) => {
     .map((tool) => {
       return `
 <tool>
-  <name>${tool.id}</name>
+  <name>${tool.serverName}-${tool.name}</name>
   <description>${tool.description}</description>
   <arguments>
     ${tool.inputSchema ? JSON.stringify(tool.inputSchema) : ''}

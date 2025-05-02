@@ -156,9 +156,9 @@ import { CompletionsParams } from '../providers/AiProvider'
 export function mcpToolsToOpenAITools(mcpTools: MCPTool[]): Array<ChatCompletionTool> {
   return mcpTools.map((tool) => ({
     type: 'function',
-    name: tool.id,
+    name: `${tool.serverName}-${tool.name}`,
     function: {
-      name: tool.id,
+      name: `${tool.serverName}-${tool.name}`,
       description: tool.description,
       parameters: {
         type: 'object',
@@ -173,8 +173,9 @@ export function openAIToolsToMcpTool(
   mcpTools: MCPTool[],
   toolCall: ChatCompletionMessageToolCall
 ): MCPTool | undefined {
+  const toolName = toolCall.function.name;
   const tool = mcpTools.find(
-    (mcpTool) => mcpTool.id === toolCall.function.name || mcpTool.name === toolCall.function.name
+    (mcpTool) => `${mcpTool.serverName}-${mcpTool.name}` === toolName
   )
 
   if (!tool) {
@@ -226,7 +227,7 @@ export async function callMCPTool(toolResponse: MCPToolResponse): Promise<MCPCal
 export function mcpToolsToAnthropicTools(mcpTools: MCPTool[]): Array<ToolUnion> {
   return mcpTools.map((tool) => {
     const t: ToolUnion = {
-      name: tool.id,
+      name: `${tool.serverName}-${tool.name}`,
       description: tool.description,
       // @ts-ignore ignore type as it it unknow
       input_schema: tool.inputSchema
@@ -237,7 +238,7 @@ export function mcpToolsToAnthropicTools(mcpTools: MCPTool[]): Array<ToolUnion> 
 
 export function anthropicToolUseToMcpTool(mcpTools: MCPTool[] | undefined, toolUse: ToolUseBlock): MCPTool | undefined {
   if (!mcpTools) return undefined
-  const tool = mcpTools.find((tool) => tool.id === toolUse.name)
+  const tool = mcpTools.find((tool) => `${tool.serverName}-${tool.name}` === toolUse.name)
   if (!tool) {
     return undefined
   }
@@ -249,7 +250,7 @@ export function mcpToolsToGeminiTools(mcpTools: MCPTool[]): Tool[] {
     {
       functionDeclarations: mcpTools?.map((tool) => {
         return {
-          name: tool.id,
+          name: `${tool.serverName}-${tool.name}`,
           description: tool.description,
           parameters: {
             type: GeminiSchemaType.OBJECT,
@@ -268,7 +269,7 @@ export function geminiFunctionCallToMcpTool(
 ): MCPTool | undefined {
   if (!toolCall) return undefined
   if (!mcpTools) return undefined
-  const tool = mcpTools.find((tool) => tool.id === toolCall.name)
+  const tool = mcpTools.find((tool) => `${tool.serverName}-${tool.name}` === toolCall.name)
   if (!tool) {
     return undefined
   }
@@ -339,7 +340,7 @@ export function parseToolUse(content: string, mcpTools: MCPTool[]): MCPToolRespo
       parsedArgs = toolArgs
     }
     // console.log(`Parsed arguments for tool "${toolName}":`, parsedArgs)
-    const mcpTool = mcpTools.find((tool) => tool.id === toolName)
+    const mcpTool = mcpTools.find((tool) => `${tool.serverName}-${tool.name}` === toolName)
     if (!mcpTool) {
       console.error(`Tool "${toolName}" not found in MCP tools`)
       continue
@@ -459,7 +460,7 @@ export async function parseAndCallTools(
       })
     }
 
-    return convertToMessage(toolResponse.tool.id, toolResponse.id, toolCallResponse, model)
+    return convertToMessage(`${toolResponse.tool.serverName}-${toolResponse.tool.name}`, toolResponse.id, toolCallResponse, model)
   })
 
   toolResults.push(...(await Promise.all(toolPromises)))
