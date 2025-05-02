@@ -1,4 +1,4 @@
-import { CheckOutlined, ExpandOutlined, LoadingOutlined, WarningOutlined } from '@ant-design/icons'
+import { CheckOutlined, ExpandOutlined, FileTextOutlined, LoadingOutlined, WarningOutlined } from '@ant-design/icons'
 import { useSettings } from '@renderer/hooks/useSettings'
 import type { ToolMessageBlock } from '@renderer/types/newMessage'
 import { Collapse, message as antdMessage, Modal, Tabs, Tooltip } from 'antd'
@@ -15,6 +15,8 @@ const MessageTools: FC<Props> = ({ blocks }) => {
   const [activeKeys, setActiveKeys] = useState<string[]>([])
   const [copiedMap, setCopiedMap] = useState<Record<string, boolean>>({})
   const [expandedResponse, setExpandedResponse] = useState<{ content: string; title: string } | null>(null)
+  const [isFormattedModalVisible, setIsFormattedModalVisible] = useState<boolean>(false)
+  const [formattedContent, setFormattedContent] = useState<string>('')
   const { t } = useTranslation()
   const { messageFont, fontSize } = useSettings()
   const fontFamily = useMemo(() => {
@@ -98,6 +100,29 @@ const MessageTools: FC<Props> = ({ blocks }) => {
                     aria-label={t('common.copy')}>
                     {!copiedMap[id] && <i className="iconfont icon-copy"></i>}
                     {copiedMap[id] && <CheckOutlined style={{ color: 'var(--color-primary)' }} />}
+                  </ActionButton>
+                </Tooltip>
+                <Tooltip title={t('message.tools.viewFormattedContent') || "View Formatted Content"} mouseEnterDelay={0.5}>
+                  <ActionButton
+                    className="message-action-button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      const text = toolResponse.response?.content?.[0]?.text
+                      if (text) {
+                        try {
+                          const parsed = JSON.parse(text)
+                          const formatted = JSON.stringify(parsed, null, 2)
+                          setFormattedContent(formatted)
+                          setIsFormattedModalVisible(true)
+                        } catch (error) {
+                          antdMessage.error({ content: 'Failed to parse JSON content', key: 'parse-error' })
+                        }
+                      } else {
+                        antdMessage.warning({ content: 'No formatted content available', key: 'no-content' })
+                      }
+                    }}
+                    aria-label="View Formatted Content">
+                    <FileTextOutlined />
                   </ActionButton>
                 </Tooltip>
               </>
@@ -195,6 +220,30 @@ const MessageTools: FC<Props> = ({ blocks }) => {
             />
           </ExpandedResponseContainer>
         )}
+      </Modal>
+
+      <Modal
+        title="Formatted Content"
+        open={isFormattedModalVisible}
+        onCancel={() => setIsFormattedModalVisible(false)}
+        footer={null}
+        width="80%"
+        centered
+        styles={{ body: { maxHeight: '80vh', overflow: 'auto' } }}>
+        <ExpandedResponseContainer style={{ fontFamily, fontSize }}>
+          <div style={{ position: 'relative' }}>
+            <ActionButton
+              className="copy-expanded-button"
+              onClick={() => {
+                navigator.clipboard.writeText(formattedContent)
+                antdMessage.success({ content: t('message.copied'), key: 'copy-formatted' })
+              }}
+              aria-label={t('common.copy')}>
+              <i className="iconfont icon-copy"></i>
+            </ActionButton>
+            <CodeBlock>{formattedContent}</CodeBlock>
+          </div>
+        </ExpandedResponseContainer>
       </Modal>
     </>
   )
