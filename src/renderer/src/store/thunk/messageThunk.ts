@@ -334,17 +334,19 @@ const fetchAndProcessAssistantResponseImpl = async (
         accumulatedContent += text
         if (lastBlockId) {
           if (lastBlockType === MessageBlockType.UNKNOWN) {
+            // Update the existing UNKNOWN block to become a MAIN_TEXT block
             const initialChanges: Partial<MessageBlock> = {
               type: MessageBlockType.MAIN_TEXT,
               content: accumulatedContent,
               status: MessageBlockStatus.STREAMING,
               citationReferences: citationBlockId ? [{ citationBlockId }] : []
             }
+            dispatch(updateOneBlock({ id: lastBlockId, changes: initialChanges }))
             mainTextBlockId = lastBlockId
             lastBlockType = MessageBlockType.MAIN_TEXT
-            dispatch(updateOneBlock({ id: lastBlockId, changes: initialChanges }))
             saveUpdatedBlockToDB(lastBlockId, assistantMsgId, topicId, getState)
           } else if (lastBlockType === MessageBlockType.MAIN_TEXT) {
+            // Update existing MAIN_TEXT block with new content
             const blockChanges: Partial<MessageBlock> = {
               content: accumulatedContent,
               status: MessageBlockStatus.STREAMING
@@ -352,6 +354,7 @@ const fetchAndProcessAssistantResponseImpl = async (
             throttledBlockUpdate(lastBlockId, blockChanges)
             throttledBlockDbUpdate(lastBlockId, blockChanges)
           } else {
+            // Create a new MAIN_TEXT block
             const newBlock = createMainTextBlock(assistantMsgId, accumulatedContent, {
               status: MessageBlockStatus.STREAMING,
               citationReferences: citationBlockId ? [{ citationBlockId }] : []
@@ -395,14 +398,15 @@ const fetchAndProcessAssistantResponseImpl = async (
         accumulatedThinking += text
         if (lastBlockId) {
           if (lastBlockType === MessageBlockType.UNKNOWN) {
-            // First chunk for this block: Update type and status immediately
-            lastBlockType = MessageBlockType.THINKING
+            // Update the existing UNKNOWN block to become a THINKING block
             const initialChanges: Partial<MessageBlock> = {
               type: MessageBlockType.THINKING,
               content: accumulatedThinking,
-              status: MessageBlockStatus.STREAMING
+              status: MessageBlockStatus.STREAMING,
+              thinking_millsec: thinking_millsec
             }
             dispatch(updateOneBlock({ id: lastBlockId, changes: initialChanges }))
+            lastBlockType = MessageBlockType.THINKING
             saveUpdatedBlockToDB(lastBlockId, assistantMsgId, topicId, getState)
             console.log(`[onThinkingChunk] Saved initial THINKING block ${lastBlockId} to DB.`)
           } else if (lastBlockType === MessageBlockType.THINKING) {
@@ -441,13 +445,29 @@ const fetchAndProcessAssistantResponseImpl = async (
       },
       onToolCallInProgress: (toolResponse: MCPToolResponse) => {
         if (toolResponse.status === 'invoking') {
-          const toolBlock = createToolBlock(assistantMsgId, toolResponse.id, {
-            toolName: toolResponse.tool.name,
-            status: MessageBlockStatus.PROCESSING,
-            metadata: { rawMcpToolResponse: toolResponse }
-          })
-          handleBlockTransition(toolBlock, MessageBlockType.TOOL)
-          toolCallIdToBlockIdMap.set(toolResponse.id, toolBlock.id)
+          if (lastBlockType === MessageBlockType.UNKNOWN && lastBlockId) {
+            // Update the existing UNKNOWN block to become a TOOL block
+            const changes: Partial<ToolMessageBlock> = {
+              type: MessageBlockType.TOOL,
+              toolId: toolResponse.id,
+              toolName: toolResponse.tool.name,
+              status: MessageBlockStatus.PROCESSING,
+              metadata: { rawMcpToolResponse: toolResponse }
+            }
+            dispatch(updateOneBlock({ id: lastBlockId, changes }))
+            lastBlockType = MessageBlockType.TOOL
+            toolCallIdToBlockIdMap.set(toolResponse.id, lastBlockId)
+            saveUpdatedBlockToDB(lastBlockId, assistantMsgId, topicId, getState)
+          } else {
+            // Create a new TOOL block as before
+            const toolBlock = createToolBlock(assistantMsgId, toolResponse.id, {
+              toolName: toolResponse.tool.name,
+              status: MessageBlockStatus.PROCESSING,
+              metadata: { rawMcpToolResponse: toolResponse }
+            })
+            handleBlockTransition(toolBlock, MessageBlockType.TOOL)
+            toolCallIdToBlockIdMap.set(toolResponse.id, toolBlock.id)
+          }
         } else {
           console.warn(
             `[onToolCallInProgress] Received unhandled tool status: ${toolResponse.status} for ID: ${toolResponse.id}`
@@ -484,10 +504,23 @@ const fetchAndProcessAssistantResponseImpl = async (
       },
       onExternalToolInProgress: () => {
         console.log('onExternalToolInProgress received, creating placeholder CitationBlock.')
-        const citationBlock = createCitationBlock(assistantMsgId, {}, { status: MessageBlockStatus.PROCESSING })
-        citationBlockId = citationBlock.id
-        handleBlockTransition(citationBlock, MessageBlockType.CITATION)
-        saveUpdatedBlockToDB(citationBlock.id, assistantMsgId, topicId, getState)
+        if (lastBlockType === MessageBlockType.UNKNOWN && lastBlockId) {
+          // Update the existing UNKNOWN block to become a CITATION block
+          const changes: Partial<CitationMessageBlock> = {
+            type: MessageBlockType.CITATION,
+            status: MessageBlockStatus.PROCESSING
+          }
+          dispatch(updateOneBlock({ id: lastBlockId, changes }))
+          citationBlockId = lastBlockId
+          lastBlockType = MessageBlockType.CITATION
+          saveUpdatedBlockToDB(lastBlockId, assistantMsgId, topicId, getState)
+        } else {
+          // Create a new CITATION block
+          const citationBlock = createCitationBlock(assistantMsgId, {}, { status: MessageBlockStatus.PROCESSING })
+          citationBlockId = citationBlock.id
+          handleBlockTransition(citationBlock, MessageBlockType.CITATION)
+          saveUpdatedBlockToDB(citationBlock.id, assistantMsgId, topicId, getState)
+        }
       },
       onExternalToolComplete: (externalToolResult: ExternalToolResult) => {
         console.warn('onExternalToolComplete received.', externalToolResult)
@@ -537,10 +570,22 @@ const fetchAndProcessAssistantResponseImpl = async (
         }
       },
       onImageCreated: () => {
-        const imageBlock = createImageBlock(assistantMsgId, {
-          status: MessageBlockStatus.PROCESSING
-        })
-        handleBlockTransition(imageBlock, MessageBlockType.IMAGE)
+        if (lastBlockType === MessageBlockType.UNKNOWN && lastBlockId) {
+          // Update the existing UNKNOWN block to become an IMAGE block
+          const changes: Partial<ImageMessageBlock> = {
+            type: MessageBlockType.IMAGE,
+            status: MessageBlockStatus.PROCESSING
+          }
+          dispatch(updateOneBlock({ id: lastBlockId, changes }))
+          lastBlockType = MessageBlockType.IMAGE
+          saveUpdatedBlockToDB(lastBlockId, assistantMsgId, topicId, getState)
+        } else {
+          // Create a new IMAGE block
+          const imageBlock = createImageBlock(assistantMsgId, {
+            status: MessageBlockStatus.PROCESSING
+          })
+          handleBlockTransition(imageBlock, MessageBlockType.IMAGE)
+        }
       },
       onImageGenerated: (imageData) => {
         const imageUrl = imageData.images?.[0] || 'placeholder_image_url'
