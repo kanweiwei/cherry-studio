@@ -444,6 +444,12 @@ const fetchAndProcessAssistantResponseImpl = async (
         }
       },
       onToolCallInProgress: (toolResponse: MCPToolResponse) => {
+        // Check if we've already processed this tool ID to prevent duplicates
+        if (toolCallIdToBlockIdMap.has(toolResponse.id)) {
+          console.warn(`[onToolCallInProgress] Duplicate progress update received for tool ID: ${toolResponse.id}. Ignoring.`)
+          return
+        }
+        
         if (toolResponse.status === 'invoking') {
           if (lastBlockType === MessageBlockType.UNKNOWN && lastBlockId) {
             // Update the existing UNKNOWN block to become a TOOL block
