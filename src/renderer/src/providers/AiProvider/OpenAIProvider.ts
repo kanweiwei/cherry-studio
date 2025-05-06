@@ -57,6 +57,8 @@ import { buildSystemPrompt } from '@renderer/utils/prompt'
 import { isEmpty, takeRight } from 'lodash'
 import OpenAI, { AzureOpenAI } from 'openai'
 import {
+  ChatCompletion,
+  ChatCompletionChunk,
   ChatCompletionContentPart,
   ChatCompletionCreateParamsNonStreaming,
   ChatCompletionMessageParam,
@@ -67,6 +69,8 @@ import {
 
 import { CompletionsParams } from '.'
 import BaseProvider from './BaseProvider'
+import { APIPromise } from 'openai/core'
+import { Stream } from 'openai/streaming'
 
 type ReasoningEffort = 'low' | 'medium' | 'high'
 
@@ -520,8 +524,7 @@ export default class OpenAIProvider extends BaseProvider {
           } satisfies MCPToolResponse
         })
         .filter((t): t is MCPToolResponse => typeof t !== 'undefined')
-
-      const toolResults = await parseAndCallTools(
+      return await parseAndCallTools(
         mcpToolResponses,
         toolResponses,
         onChunk,
@@ -530,11 +533,10 @@ export default class OpenAIProvider extends BaseProvider {
         model,
         mcpTools
       )
-      await processToolResults(toolResults, idx)
     }
 
     const processToolUses = async (content: string, idx: number) => {
-      const toolResults = await parseAndCallTools(
+      return await parseAndCallTools(
         content,
         toolResponses,
         onChunk,
@@ -543,14 +545,13 @@ export default class OpenAIProvider extends BaseProvider {
         model,
         mcpTools
       )
-      await processToolResults(toolResults, idx)
     }
 
-    const processStream = async (stream: any, idx: number) => {
+    const processStream = async (stream: ChatCompletion | Stream<ChatCompletionChunk>, idx: number) => {
       const toolCalls: ChatCompletionMessageToolCall[] = []
 
       // Handle non-streaming case (already returns early, no change needed here)
-      if (!isSupportStreamOutput()) {
+      if (!(stream instanceof Stream)) {
         const time_completion_millsec = new Date().getTime() - start_time_millsec
         // Calculate final metrics once
         const finalMetrics = {
@@ -561,25 +562,36 @@ export default class OpenAIProvider extends BaseProvider {
 
         // Create a synthetic usage object if stream.usage is undefined
         const finalUsage = stream.usage
+
         // Separate onChunk calls for text and usage/metrics
-        if (stream.choices[0].message?.content) {
-          onChunk({ type: ChunkType.TEXT_DELTA, text: stream.choices[0].message.content })
-          onChunk({ type: ChunkType.TEXT_COMPLETE, text: stream.choices[0].message.content })
+        let content = ''
+        stream.choices.forEach((choice) => {
+          // text
+          if (choice.message.content) {
+            content += choice.message.content
+            onChunk({ type: ChunkType.TEXT_DELTA, text: choice.message.content })
+          }
+          // tool call
+          if (choice.message.tool_calls && choice.message.tool_calls.length) {
+            choice.message.tool_calls.forEach((t) => toolCalls.push(t))
+          }
+
+          reqMessages.push(choice.message)
+        })
+
+        if (content.length) {
+          onChunk({ type: ChunkType.TEXT_COMPLETE, text: content })
         }
 
-        reqMessages.push(stream.choices[0].message)
-        if (stream.choices && stream.choices.length) {
-          stream.choices.forEach((choice) => {
-            if (choice.message?.tool_calls && choice.message?.tool_calls.length) {
-              choice.message?.tool_calls.forEach((t) => toolCalls.push(t))
-            }
-          })
-        }
+        let toolResults: Awaited<ReturnType<typeof parseAndCallTools>> = []
         if (toolCalls.length) {
-          await processToolCalls(mcpTools, toolCalls, idx)
+          toolResults = await processToolCalls(mcpTools, toolCalls, idx)
         }
         if (stream.choices[0].message?.content) {
-          await processToolUses(stream.choices[0].message?.content, idx)
+          toolResults = toolResults.concat(await processToolUses(stream.choices[0].message?.content, idx))
+        }
+        if (toolResults.length) {
+          await processToolResults(toolResults, idx)
         }
         // Always send usage and metrics data
         onChunk({ type: ChunkType.BLOCK_COMPLETE, response: { usage: finalUsage, metrics: finalMetrics } })

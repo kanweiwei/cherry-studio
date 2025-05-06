@@ -329,6 +329,7 @@ export default class AnthropicProvider extends BaseProvider {
                   } satisfies MCPToolResponse
                 })
                 .filter((t) => typeof t !== 'undefined')
+              onChunk({ type: ChunkType.TEXT_COMPLETE, text: '' })
               toolResults = await parseAndCallTools(
                 mcpToolResponses,
                 toolResponses,
