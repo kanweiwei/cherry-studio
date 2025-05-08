@@ -412,6 +412,7 @@ export default class AnthropicProvider extends BaseProvider {
                   }
                   return {
                     id: toolCall.id,
+                    toolCallId: toolCall.id,
                     tool: mcpTool,
                     arguments: toolCall.input as Record<string, unknown>,
                     status: 'pending'
@@ -747,31 +748,36 @@ export default class AnthropicProvider extends BaseProvider {
       return mcpToolCallResponseToAnthropicMessage(mcpToolResponse, resp, model)
     } else if ('toolCallId' in mcpToolResponse) {
       return {
-        type: 'tool_result',
-        tool_use_id: mcpToolResponse.toolCallId!,
-        content: resp.content
-          .map((item) => {
-            if (item.type === 'text') {
-              return {
-                type: 'text',
-                text: item.text || ''
-              } satisfies TextBlockParam
-            }
-            if (item.type === 'image') {
-              return {
-                type: 'image',
-                source: {
-                  data: item.data || '',
-                  media_type: (item.mimeType || 'image/png') as Base64ImageSource['media_type'],
-                  type: 'base64'
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: mcpToolResponse.toolCallId!,
+            content: resp.content
+              .map((item) => {
+                if (item.type === 'text') {
+                  return {
+                    type: 'text',
+                    text: item.text || ''
+                  } satisfies TextBlockParam
                 }
-              } satisfies ImageBlockParam
-            }
-            return
-          })
-          .filter((n) => typeof n !== 'undefined'),
-        is_error: resp.isError
-      } satisfies ToolResultBlockParam
+                if (item.type === 'image') {
+                  return {
+                    type: 'image',
+                    source: {
+                      data: item.data || '',
+                      media_type: (item.mimeType || 'image/png') as Base64ImageSource['media_type'],
+                      type: 'base64'
+                    }
+                  } satisfies ImageBlockParam
+                }
+                return
+              })
+              .filter((n) => typeof n !== 'undefined'),
+            is_error: resp.isError
+          } satisfies ToolResultBlockParam
+        ]
+      }
     }
     return
   }
