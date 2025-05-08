@@ -318,7 +318,6 @@ export default class AnthropicProvider extends BaseProvider {
     const processStream = (body: MessageCreateParamsNonStreaming, idx: number) => {
       return new Promise<void>((resolve, reject) => {
         // 等待接口返回流
-        onChunk({ type: ChunkType.LLM_RESPONSE_CREATED })
         const toolCalls: ToolUseBlock[] = []
         let hasThinkingContent = false
         this.sdk.messages
