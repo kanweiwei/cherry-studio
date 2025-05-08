@@ -104,8 +104,8 @@ export default class AihubmixProvider extends BaseProvider {
     return this.getProvider(model).getEmbeddingDimensions(model)
   }
 
-  public convertMcpTools(mcpTools: MCPTool[]) {
-    return this.currentProvider.convertMcpTools(mcpTools)
+  public convertMcpTools<T>(mcpTools: MCPTool[]) {
+    return this.currentProvider.convertMcpTools(mcpTools) as T[]
   }
 
   public mcpToolCallResponseToMessage(mcpToolResponse: MCPToolResponse, resp: MCPCallToolResponse, model: Model) {

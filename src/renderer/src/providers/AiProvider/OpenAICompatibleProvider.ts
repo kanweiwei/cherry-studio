@@ -325,8 +325,8 @@ export default class OpenAICompatibleProvider extends BaseOpenAiProvider {
     return {}
   }
 
-  public convertMcpTools(mcpTools: MCPTool[]) {
-    return mcpToolsToOpenAIChatTools(mcpTools)
+  public convertMcpTools<T>(mcpTools: MCPTool[]): T[] {
+    return mcpToolsToOpenAIChatTools(mcpTools) as T[]
   }
 
   public mcpToolCallResponseToMessage = (mcpToolResponse: MCPToolResponse, resp: MCPCallToolResponse, model: Model) => {
@@ -360,7 +360,7 @@ export default class OpenAICompatibleProvider extends BaseOpenAiProvider {
     const defaultModel = getDefaultModel()
     const model = assistant.model || defaultModel
 
-    const { contextCount, maxTokens, streamOutput, toolCall } = getAssistantSettings(assistant)
+    const { contextCount, maxTokens, streamOutput, enableToolUse } = getAssistantSettings(assistant)
     const isEnabledWebSearch = assistant.enableWebSearch || !!assistant.webSearchProviderId
     messages = addImageFileToContents(messages)
     const enableReasoning =
@@ -374,7 +374,7 @@ export default class OpenAICompatibleProvider extends BaseOpenAiProvider {
         content: `Formatting re-enabled${systemMessage ? '\n' + systemMessage.content : ''}`
       }
     }
-    const { tools } = this.setupToolsConfig<ChatCompletionTool>({ mcpTools, model, toolCall })
+    const { tools } = this.setupToolsConfig<ChatCompletionTool>({ mcpTools, model, enableToolUse })
 
     if (this.useSystemPromptForTools) {
       systemMessage.content = buildSystemPrompt(systemMessage.content || '', mcpTools)

@@ -273,7 +273,7 @@ export default class GeminiProvider extends BaseProvider {
   }: CompletionsParams): Promise<void> {
     const defaultModel = getDefaultModel()
     const model = assistant.model || defaultModel
-    const { contextCount, maxTokens, streamOutput, toolCall } = getAssistantSettings(assistant)
+    const { contextCount, maxTokens, streamOutput, enableToolUse } = getAssistantSettings(assistant)
 
     const userMessages = filterUserRoleStartMessages(
       filterEmptyMessages(filterContextMessages(takeRight(messages, contextCount + 2)))
@@ -293,7 +293,7 @@ export default class GeminiProvider extends BaseProvider {
     const { tools } = this.setupToolsConfig<Tool>({
       mcpTools,
       model,
-      toolCall
+      enableToolUse
     })
 
     if (this.useSystemPromptForTools) {
@@ -953,8 +953,8 @@ export default class GeminiProvider extends BaseProvider {
     throw new Error('Method not implemented.')
   }
 
-  public convertMcpTools(mcpTools: MCPTool[]): Tool[] {
-    return mcpToolsToGeminiTools(mcpTools)
+  public convertMcpTools<T>(mcpTools: MCPTool[]): T[] {
+    return mcpToolsToGeminiTools(mcpTools) as T[]
   }
 
   public mcpToolCallResponseToMessage = (mcpToolResponse: MCPToolResponse, resp: MCPCallToolResponse, model: Model) => {

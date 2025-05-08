@@ -211,7 +211,7 @@ export default class AnthropicProvider extends BaseProvider {
   public async completions({ messages, assistant, mcpTools, onChunk, onFilterMessages }: CompletionsParams) {
     const defaultModel = getDefaultModel()
     const model = assistant.model || defaultModel
-    const { contextCount, maxTokens, streamOutput, toolCall } = getAssistantSettings(assistant)
+    const { contextCount, maxTokens, streamOutput, enableToolUse } = getAssistantSettings(assistant)
 
     const userMessagesParams: MessageParam[] = []
 
@@ -233,7 +233,7 @@ export default class AnthropicProvider extends BaseProvider {
     const { tools } = this.setupToolsConfig<ToolUnion>({
       model,
       mcpTools,
-      toolCall
+      enableToolUse
     })
 
     if (this.useSystemPromptForTools && mcpTools && mcpTools.length) {
@@ -739,8 +739,8 @@ export default class AnthropicProvider extends BaseProvider {
     return 0
   }
 
-  public convertMcpTools(mcpTools: MCPTool[]) {
-    return mcpToolsToAnthropicTools(mcpTools)
+  public convertMcpTools<T>(mcpTools: MCPTool[]): T[] {
+    return mcpToolsToAnthropicTools(mcpTools) as T[]
   }
 
   public mcpToolCallResponseToMessage = (mcpToolResponse: MCPToolResponse, resp: MCPCallToolResponse, model: Model) => {

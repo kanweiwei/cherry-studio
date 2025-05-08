@@ -46,12 +46,7 @@ import { findFileBlocks, findImageBlocks, getMainTextContent } from '@renderer/u
 import { buildSystemPrompt } from '@renderer/utils/prompt'
 import { isEmpty, takeRight } from 'lodash'
 import OpenAI from 'openai'
-import {
-  ChatCompletionContentPart,
-  ChatCompletionMessageParam,
-  ChatCompletionTool
-} from 'openai/resources/chat/completions'
-import { Tool } from 'openai/resources/responses/responses'
+import { ChatCompletionContentPart, ChatCompletionMessageParam } from 'openai/resources/chat/completions'
 import { Stream } from 'openai/streaming'
 import { FileLike, toFile } from 'openai/uploads'
 
@@ -74,7 +69,7 @@ export abstract class BaseOpenAiProvider extends BaseProvider {
     })
   }
 
-  abstract convertMcpTools(mcpTools: MCPTool[]): Tool[] | ChatCompletionTool[]
+  abstract convertMcpTools<T>(mcpTools: MCPTool[]): T[]
 
   abstract mcpToolCallResponseToMessage: (
     mcpToolResponse: MCPToolResponse,
@@ -313,7 +308,7 @@ export abstract class BaseOpenAiProvider extends BaseProvider {
     }
     const defaultModel = getDefaultModel()
     const model = assistant.model || defaultModel
-    const { contextCount, maxTokens, streamOutput, toolCall } = getAssistantSettings(assistant)
+    const { contextCount, maxTokens, streamOutput, enableToolUse } = getAssistantSettings(assistant)
     const isEnabledWebSearch = assistant.enableWebSearch || !!assistant.webSearchProviderId
     // 退回到 OpenAI 兼容模式
     if (isOpenAIWebSearch(model)) {
@@ -437,7 +432,7 @@ export abstract class BaseOpenAiProvider extends BaseProvider {
     const { tools: extraTools } = this.setupToolsConfig<OpenAI.Responses.Tool>({
       mcpTools,
       model,
-      toolCall
+      enableToolUse
     })
 
     tools = tools.concat(extraTools)
@@ -1223,8 +1218,8 @@ export default class OpenAIProvider extends BaseOpenAiProvider {
     super(provider)
   }
 
-  public convertMcpTools(mcpTools: MCPTool[]) {
-    return mcpToolsToOpenAIResponseTools(mcpTools)
+  public convertMcpTools<T>(mcpTools: MCPTool[]) {
+    return mcpToolsToOpenAIResponseTools(mcpTools) as T[]
   }
 
   public mcpToolCallResponseToMessage = (

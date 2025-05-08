@@ -55,7 +55,7 @@ export type AssistantSettings = {
   maxTokens: number | undefined
   enableMaxTokens: boolean
   streamOutput: boolean
-  toolCall: boolean
+  enableToolUse: boolean
   hideMessages: boolean
   defaultModel?: Model
   customParameters?: AssistantSettingCustomParameters[]
