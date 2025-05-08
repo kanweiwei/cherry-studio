@@ -547,7 +547,7 @@ export async function parseAndCallTools<R>(
 }
 
 export function mcpToolCallResponseToOpenAICompatibleMessage(
-  toolUseId: string,
+  mcpToolResponse: MCPToolResponse,
   resp: MCPCallToolResponse,
   isVisionModel: boolean = false
 ): ChatCompletionMessageParam {
@@ -561,7 +561,7 @@ export function mcpToolCallResponseToOpenAICompatibleMessage(
     const content: ChatCompletionContentPart[] = [
       {
         type: 'text',
-        text: `Here is the result of tool call ${toolUseId}:`
+        text: `Here is the result of mcp tool use \`${mcpToolResponse.tool.name}\`:`
       }
     ]
 
@@ -625,7 +625,7 @@ export function mcpToolCallResponseToOpenAICompatibleMessage(
 }
 
 export function mcpToolCallResponseToOpenAIMessage(
-  toolUseId: string,
+  mcpToolResponse: MCPToolResponse,
   resp: MCPCallToolResponse,
   isVisionModel: boolean = false
 ): OpenAI.Responses.EasyInputMessage {
@@ -639,7 +639,7 @@ export function mcpToolCallResponseToOpenAIMessage(
     const content: OpenAI.Responses.ResponseInputContent[] = [
       {
         type: 'input_text',
-        text: `Here is the result of tool call ${toolUseId}:`
+        text: `Here is the result of mcp tool use \`${mcpToolResponse.tool.name}\`:`
       }
     ]
 
@@ -694,7 +694,7 @@ export function mcpToolCallResponseToAnthropicMessage(
     const content: ContentBlockParam[] = [
       {
         type: 'text',
-        text: `Here is the result of tool call ${mcpToolResponse.tool.id}:`
+        text: `Here is the result of mcp tool use \`${mcpToolResponse.tool.name}\`:`
       }
     ]
     if (isVisionModel(model)) {
@@ -749,7 +749,7 @@ export function mcpToolCallResponseToAnthropicMessage(
 }
 
 export function mcpToolCallResponseToGeminiMessage(
-  toolUseId: string,
+  mcpToolResponse: MCPToolResponse,
   resp: MCPCallToolResponse,
   isVisionModel: boolean = false
 ): Content {
@@ -766,7 +766,7 @@ export function mcpToolCallResponseToGeminiMessage(
   } else {
     const parts: Part[] = [
       {
-        text: `Here is the result of tool call ${toolUseId}:`
+        text: `Here is the result of mcp tool use \`${mcpToolResponse.tool.name}\`:`
       }
     ]
     if (isVisionModel) {
