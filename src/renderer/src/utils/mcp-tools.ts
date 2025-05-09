@@ -627,21 +627,10 @@ export function mcpToolCallResponseToOpenAICompatibleMessage(
         }
       }
     } else {
-      const hasText = resp.content.some((item) => item.type === 'text')
-      for (const item of resp.content) {
-        if (item.type === 'text') {
-          content.push({
-            type: 'text',
-            text: item.text || 'no content'
-          })
-        }
-      }
-      if (!hasText) {
-        content.push({
-          type: 'text',
-          text: JSON.stringify(resp.content)
-        })
-      }
+      content.push({
+        type: 'text',
+        text: JSON.stringify(resp.content)
+      })
     }
 
     message.content = content

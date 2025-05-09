@@ -336,7 +336,7 @@ export default class OpenAICompatibleProvider extends BaseOpenAiProvider {
       const toolCallOut: ChatCompletionToolMessageParam = {
         role: 'tool',
         tool_call_id: mcpToolResponse.toolCallId,
-        content: resp.content.reduce((acc, c) => (c.type === 'text' ? acc + c.text : acc), '')
+        content: JSON.stringify(resp.content)
       }
       return toolCallOut
     }
